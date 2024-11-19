@@ -24,6 +24,7 @@ error Airdrop__PhaseTransitionTooEarly();
 error Airdrop__IncompatibleDecimals();
 error Airdrop__MaxPledgeExceeded();
 error Airdrop__DustAmountTooLow();
+error Airdrop__MaxTotalPledgeExceeded();
 
 /**
  * @title Airdrop
@@ -84,6 +85,7 @@ contract Airdrop is ReentrancyGuard, Ownable, Pausable {
     uint256 private constant DEFAULT_MIN_PHASE_TRANSITION = 24 hours;
     uint256 private constant DEFAULT_MAX_PLEDGE = 1000000e18;
     uint256 private constant DEFAULT_MIN_DUST = 1e15;
+    uint256 private constant MAX_TOTAL_PLEDGE_RATIO = 10;
 
     /* Events */
     event PledgeSubmitted(
@@ -115,7 +117,7 @@ contract Airdrop is ReentrancyGuard, Ownable, Pausable {
     );
     event MinPhaseTransitionTimeUpdated(uint256 newTime);
 
-    // Modifiers 
+    // Modifiers
     modifier notBlacklisted() {
         if (s_blacklistedAddresses[msg.sender])
             revert Airdrop__InvalidAddress();
@@ -187,7 +189,17 @@ contract Airdrop is ReentrancyGuard, Ownable, Pausable {
         if (amount < i_minPledgeAmount) revert Airdrop__PledgeAmountTooLow();
         if (amount > MAX_INT / i_conversionRatio)
             revert Airdrop__PledgeAmountTooLarge();
-            
+
+        // Calculate potential total TokenB required
+        uint256 newTotalPledged = s_totalTokenAPledged + amount;
+        uint256 potentialTokenBRequired = (newTotalPledged *
+            i_conversionRatio) / BASIS_POINTS;
+
+        // Ensure we don't exceed maximum possible pledge
+        if (potentialTokenBRequired > i_tokenBMaxCap * MAX_TOTAL_PLEDGE_RATIO) {
+            revert Airdrop__MaxTotalPledgeExceeded();
+        }
+
         /* Only check scaling ratio if it has been set (after first finalizePledgePhase) */
         if (s_currentPhase == AirdropPhase.PLEDGE && s_scalingRatio != 0) {
             if (s_scalingRatio < minScalingRatio)
@@ -221,7 +233,6 @@ contract Airdrop is ReentrancyGuard, Ownable, Pausable {
         emit PledgeSubmitted(msg.sender, amount, block.timestamp);
     }
 
-
     /**
      * @dev Moves to distribution phase and calculates scaling ratio if needed
      */
@@ -239,17 +250,11 @@ contract Airdrop is ReentrancyGuard, Ownable, Pausable {
             i_conversionRatio) / BASIS_POINTS;
 
         if (totalTokenBRequired > i_tokenBMaxCap) {
-            // Calculate scaling ratio: (maxCap * BASIS_POINTS) / totalRequired
             s_scalingRatio =
                 (i_tokenBMaxCap * BASIS_POINTS) /
                 totalTokenBRequired;
-
-            /* Ensure scaling ratio doesn't go below minimum */
-            if (s_scalingRatio < MIN_SCALING_RATIO) {
-                s_scalingRatio = MIN_SCALING_RATIO;
-            }
         } else {
-            s_scalingRatio = BASIS_POINTS; // 100% if under max cap
+            s_scalingRatio = BASIS_POINTS; 
         }
 
         s_currentPhase = AirdropPhase.DISTRIBUTION;
